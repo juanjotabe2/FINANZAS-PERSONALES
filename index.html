@@ -121,12 +121,10 @@ details summary{cursor:pointer;color:var(--text-2)}
    Mis finanzas – app de un solo archivo.
    Datos: localStorage de este navegador + copia JSON exportable.
    ========================================================= */
-/* === Sincronización opcional (Supabase) ===
-   Si rellenas estas dos constantes, en cada dispositivo solo tendrás que iniciar sesión.
-   Son datos públicos por diseño (la seguridad la da la RLS de la tabla), pero si prefieres
-   no ponerlos aquí, déjalos vacíos e introdúcelos en Ajustes → Sincronización. */
-const SUPABASE_URL='';
-const SUPABASE_KEY='';
+/* === Sincronización opcional con TU Google Sheets (vía Apps Script) ===
+   Opcional: pega aquí la URL /exec de tu script para no tener que escribirla en cada dispositivo.
+   La CLAVE SECRETA nunca va en este archivo: se introduce en Ajustes de cada dispositivo. */
+const SHEETS_URL='';
 const LS_KEY='finanzas-v1';
 const MES=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
 const MES_L=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
@@ -135,8 +133,7 @@ const ASSET_TYPES=['Liquidez','Inversión','Cuenta por cobrar','Inmueble','Otros
 const LIBS={
   xlsx:'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js',
   pdf:'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
-  pdfWorker:'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
-  supabase:'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js'
+  pdfWorker:'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'
 };
 
 function defaultState(){
@@ -1044,10 +1041,9 @@ document.addEventListener('click',e=>{
     reapplyAll:()=>{if(!confirm('Esto recalcula la categoría de TODOS los movimientos con las reglas actuales y deshace los cambios manuales (excepto los que no coincidan con ninguna regla). ¿Seguir?'))return;let n=0;S.txs.forEach(x=>{const c=categorize(x.desc,x.amount);if(c!=='Sin categoría'&&c!=='Otros ingresos'&&c!==x.cat){x.cat=c;n++}});save();render();toast(n+' movimientos cambiados')},
     addAcc:()=>{const n=$('#newAcc').value.trim();if(n&&!S.accounts.includes(n)){S.accounts.push(n);save();render()}},
     addFx:()=>{const k=$('#newFx').value.trim().toUpperCase(),v=parseAmount($('#newFxV').value);if(k&&isFinite(v)&&v>0){S.settings.fx[k]=v;save();render()}},
-    syncReset:()=>{try{localStorage.removeItem(SYNC_KEY)}catch(e){}SB.client=null;SB.session=null;syncBadge();render()},
-    syncLogin:()=>syncAuth('in'),syncSignup:()=>syncAuth('up'),syncLogout:async()=>{await SB.client?.auth.signOut();SB.session=null;syncBadge();render()},
-    syncNow:()=>syncNow(true),syncSaveCfg:()=>{const u=$('#syUrl').value.trim(),k=$('#syKey').value.trim();if(!u||!k){alert('Pon la URL y la clave publishable/anon');return}saveSyncCfg({url:u,key:k});SB.client=null;initSync().then(render)},
-    wipe:()=>{if(confirm('¿Seguro? Se borrará todo de ESTE navegador (si usas sincronización, la copia en la nube no se toca y se volverá a descargar al entrar). Exporta antes una copia si la quieres conservar.')&&confirm('Última confirmación: ¿borrar todo?')){localStorage.removeItem(LS_KEY);S=null;render()}}
+    syncConnect:()=>syncConnect(),syncNow:()=>syncNow(true),
+    syncLogout:()=>{if(!confirm('¿Desconectar este dispositivo de tu hoja? Los datos de la hoja no se tocan.'))return;try{localStorage.removeItem(SYNC_KEY)}catch(e){}SB.on=false;syncBadge();render()},
+    wipe:()=>{if(confirm('¿Seguro? Se borrará todo de ESTE navegador (si sincronizas con Google Sheets, la hoja no se toca y podrás volver a conectar). Exporta antes una copia si la quieres conservar.')&&confirm('Última confirmación: ¿borrar todo?')){localStorage.removeItem(LS_KEY);S=null;render()}}
   })[act]?.();
 });
 document.addEventListener('change',e=>{
@@ -1087,31 +1083,31 @@ $('#btnExport').onclick=()=>{if(S)exportBackup()};
 document.addEventListener('dragover',e=>e.preventDefault());
 document.addEventListener('drop',e=>{if(e.target.closest('#drop'))return;e.preventDefault();if(!S){S=defaultState();S.rules=defaultRules();save()}if(e.dataTransfer.files.length)handleFiles([...e.dataTransfer.files])});
 
-/* ================= Sincronización (Supabase) ================= */
-const SYNC_KEY='finanzas-sync',TABLE='finanzas_estado';
-const SB={client:null,session:null,busy:false,last:null,err:'',pushT:null};
-function syncCfg(){if(SUPABASE_URL&&SUPABASE_KEY)return{url:SUPABASE_URL,key:SUPABASE_KEY,fixed:true};try{return JSON.parse(localStorage.getItem(SYNC_KEY)||'null')}catch(e){return null}}
+/* ================= Sincronización con Google Sheets (Apps Script) ================= */
+const SYNC_KEY='finanzas-sheets';
+const SB={on:false,busy:false,last:null,err:'',pushT:null};
+function syncCfg(){let c=null;try{c=JSON.parse(localStorage.getItem(SYNC_KEY)||'null')}catch(e){}
+  if(SHEETS_URL){c=c||{};c.url=SHEETS_URL;c.fixed=true}return c&&c.url&&c.key?c:(c&&c.url?{...c,partial:true}:null)}
 function saveSyncCfg(c){try{localStorage.setItem(SYNC_KEY,JSON.stringify(c))}catch(e){}}
-async function initSync(){
-  const c=syncCfg();if(!c){syncBadge();return}
-  try{
-    if(!window.supabase)await loadScript(LIBS.supabase);
-    if(!SB.client){SB.client=window.supabase.createClient(c.url,c.key,{auth:{persistSession:true,autoRefreshToken:true,storageKey:'finanzas-auth'}});
-      SB.client.auth.onAuthStateChange((ev,sess)=>{SB.session=sess;syncBadge();if(sess&&(ev==='SIGNED_IN'||ev==='INITIAL_SESSION'))syncNow()});}
-    const {data}=await SB.client.auth.getSession();SB.session=data.session;
-    if(SB.session)await syncNow();
-  }catch(e){SB.err=e.message;}
-  syncBadge();
+async function api(action,extra={},cfg){
+  cfg=cfg||syncCfg();
+  const r=await fetch(cfg.url,{method:'POST',body:JSON.stringify({key:cfg.key,action,...extra}),redirect:'follow'});
+  if(!r.ok)throw new Error('El script respondió '+r.status);
+  let j;try{j=await r.json()}catch(e){throw new Error('Respuesta no válida del script (¿URL /exec correcta y acceso "Cualquier usuario"?)')}
+  if(!j.ok&&!j.conflict)throw new Error(j.error||'Error del script');
+  return j;
 }
+function initSync(){const c=syncCfg();SB.on=!!(c&&!c.partial);syncBadge();if(SB.on)syncNow()}
 function syncBadge(){
-  const b=$('#syncBadge');if(!b)return;const c=syncCfg();
-  if(!c){b.style.display='none';return}b.style.display='inline-block';
-  b.textContent=!SB.session?'☁ Sin sesión':SB.busy?'☁ Sincronizando…':!navigator.onLine?'☁ Sin conexión':SB.err?'☁ Error':S&&S.meta.dirty?'☁ Pendiente':'☁ Sincronizado';
+  const b=$('#syncBadge');if(!b)return;
+  if(!SB.on){b.style.display='none';return}b.style.display='inline-block';
+  b.textContent=SB.busy?'☁ Sincronizando…':!navigator.onLine?'☁ Sin conexión':SB.err?'☁ Error':S&&S.meta.dirty?'☁ Pendiente':'☁ Sincronizado';
   b.title=SB.err||(SB.last?'Última sincronización: '+SB.last.toLocaleString('es-ES'):'');
   const card=$('#syncCard');if(card&&UI.tab==='ajustes'&&!card.contains(document.activeElement))card.innerHTML=syncCardHTML();
 }
-function schedulePush(){if(!SB.session)return;clearTimeout(SB.pushT);SB.pushT=setTimeout(()=>syncNow(),1500)}
+function schedulePush(){if(!SB.on)return;clearTimeout(SB.pushT);SB.pushT=setTimeout(()=>syncNow(),2500)}
 function payload(){const {meta,...rest}=S;return {...rest,meta:{deleted:meta.deleted||[]}}}
+function isEmptyRemote(d){return !d||(!(d.txs||[]).length&&!(d.assets||[]).length&&!(d.categories||[]).length)}
 function mergeStates(loc,rem){
   const del=new Set([...(loc.meta.deleted||[]),...((rem.meta&&rem.meta.deleted)||[])]);
   const byId=(a=[],b=[])=>{const m=new Map();b.forEach(x=>m.set(x.id,x));a.forEach(x=>m.set(x.id,x));return [...m.values()].filter(x=>!del.has(x.id))};
@@ -1123,57 +1119,62 @@ function mergeStates(loc,rem){
   out.meta={...loc.meta,deleted:[...del].slice(-5000)};
   return out;
 }
+function adoptRemote(j){
+  const d=JSON.parse(JSON.stringify(j.data));const deleted=(d.meta&&d.meta.deleted)||[];
+  if(!d.categories.length)delete d.categories; if(!d.settings||!Object.keys(d.settings).length)delete d.settings;
+  S=migrate(d);S.meta={rev:j.rev,dirty:false,deleted};persist();
+}
 async function syncNow(manual=false,depth=0){
-  if(!SB.client||!SB.session||SB.busy)return;
+  if(!SB.on||SB.busy)return;
   if(!navigator.onLine){syncBadge();return}
   SB.busy=true;SB.err='';syncBadge();
+  let rerender=false;
   try{
-    const uidU=SB.session.user.id;
-    const {data:row,error}=await SB.client.from(TABLE).select('data,rev').eq('user_id',uidU).maybeSingle();
-    if(error)throw error;
-    if(!S){S=defaultState();S.rules=defaultRules();}
-    if(!row){
-      if(S.txs.length||S.assets.length){const {error:e2}=await SB.client.from(TABLE).insert({user_id:uidU,data:payload(),rev:1});if(e2)throw e2;S.meta.rev=1;S.meta.dirty=false;persist();}
-    } else if(row.rev===S.meta.rev){
-      if(S.meta.dirty){
-        const next=row.rev+1;
-        const {data:up,error:e3}=await SB.client.from(TABLE).update({data:payload(),rev:next,updated_at:new Date().toISOString()}).eq('user_id',uidU).eq('rev',row.rev).select('rev');
-        if(e3)throw e3;
-        if(!up||!up.length){SB.busy=false;if(depth<3)return syncNow(manual,depth+1);throw new Error('Conflicto de versiones, inténtalo de nuevo')}
-        S.meta.rev=next;S.meta.dirty=false;persist();
-      }
+    if(!S){S=defaultState();S.rules=defaultRules();S.meta.dirty=false}
+    const j=await api('get');
+    if(isEmptyRemote(j.data)){
+      if(S.txs.length||S.assets.length){const p=await api('put',{baseRev:j.rev,data:payload()});if(p.conflict)throw new Error('La hoja cambió mientras se subían los datos; vuelve a intentarlo');S.meta.rev=p.rev;S.meta.dirty=false;persist()}
+    } else if(j.rev===S.meta.rev&&!S.meta.dirty){
+      /* nada que hacer */
+    } else if(!S.meta.dirty){
+      adoptRemote(j);rerender=true;
     } else {
-      const remote=migrate(JSON.parse(JSON.stringify(row.data)));
-      if(!S.meta.dirty){remote.meta={rev:row.rev,dirty:false,deleted:(row.data.meta&&row.data.meta.deleted)||[]};S=remote;persist();render();}
-      else{S=migrate(mergeStates(S,row.data));S.meta.rev=row.rev;S.meta.dirty=true;persist();SB.busy=false;render();return syncNow(manual,depth+1)}
+      if(j.rev!==S.meta.rev){S=migrate(mergeStates(S,j.data));S.meta.dirty=true;rerender=true}
+      const p=await api('put',{baseRev:j.rev,data:payload()});
+      if(p.conflict){SB.busy=false;if(depth<3)return syncNow(manual,depth+1);throw new Error('Conflicto de versiones, inténtalo de nuevo')}
+      S.meta.rev=p.rev;S.meta.dirty=false;persist();
     }
-    SB.last=new Date();if(manual)toast('Sincronizado ✓');
-  }catch(e){SB.err=e.message||String(e);if(manual)toast('Error al sincronizar: '+esc(SB.err),7000)}
-  finally{SB.busy=false;syncBadge()}
+    SB.last=new Date();if(manual)toast('Sincronizado con tu Google Sheets ✓');
+  }catch(e){SB.err=e.message||String(e);if(manual)toast('Error al sincronizar: '+esc(SB.err),8000)}
+  finally{SB.busy=false;syncBadge();if(rerender)render()}
 }
-async function syncAuth(mode){
-  const email=$('#syEmail').value.trim(),pw=$('#syPw').value;
-  if(!email||!pw){alert('Escribe email y contraseña');return}
+async function syncConnect(){
+  const url=($('#syUrl')?.value||SHEETS_URL||'').trim(),key=($('#syKey')?.value||'').trim();
+  if(!/^https:\/\/script\.google(usercontent)?\.com\/.+/.test(url)){alert('La URL debe ser la de tu aplicación web de Apps Script (https://script.google.com/macros/s/…/exec)');return}
+  if(key.length<16){alert('Pega la clave secreta que te dio el script');return}
+  const btn=$('#syGo');if(btn){btn.disabled=true;btn.textContent='Conectando…'}
   try{
-    if(!SB.client)await initSync();
-    const r=mode==='up'?await SB.client.auth.signUp({email,password:pw}):await SB.client.auth.signInWithPassword({email,password:pw});
-    if(r.error)throw r.error;
-    if(mode==='up'&&!r.data.session){toast('Cuenta creada. Revisa tu email para confirmarla y luego entra.',8000);return}
-    SB.session=r.data.session;await syncNow(true);render();
-  }catch(e){alert('No se pudo: '+e.message)}
+    const j=await api('get',{},{url,key});
+    const remoteHas=!isEmptyRemote(j.data),localHas=S&&(S.txs.length||S.assets.length);
+    if(remoteHas&&localHas&&S.meta.rev===0&&!confirm(`Tu hoja ya tiene datos (${j.data.txs.length} movimientos) y este navegador también (${S.txs.length}). Se combinarán ambos. ¿Continuar?`)){if(btn){btn.disabled=false;btn.textContent='Conectar'}return}
+    saveSyncCfg({url,key});SB.on=true;
+    if(S&&localHas&&remoteHas&&S.meta.rev===0)S.meta.dirty=true;
+    if(S&&localHas&&!remoteHas)S.meta.dirty=true;
+    await syncNow(true);if(UI.tab==='importar'||!S)UI.tab='resumen';render();
+  }catch(e){alert('No se pudo conectar: '+e.message);if(btn){btn.disabled=false;btn.textContent='Conectar'}}
 }
 function syncCardHTML(){
   const c=syncCfg();
-  const head=`<h3>☁ Sincronización entre dispositivos (opcional)</h3><div class="sub">Guarda tus datos en tu propio proyecto de Supabase para usarlos desde el móvil y cualquier ordenador. Sin esto, los datos solo están en este navegador.</div>`;
-  if(!c||!c.url)return head+`<div class="form"><label>URL del proyecto</label><input type="text" id="syUrl" placeholder="https://xxxx.supabase.co"><label>Clave publishable / anon</label><input type="text" id="syKey" placeholder="sb_publishable_… o eyJ…"></div>
-    <div class="row" style="margin-top:8px"><button class="btn pri" data-act="syncSaveCfg">Conectar</button><span class="small muted">Instrucciones en el README.</span></div>`;
-  if(!SB.session)return head+`<p class="small">Proyecto: <code>${esc(c.url)}</code></p><div class="form"><label>Email</label><input type="text" id="syEmail" autocomplete="username"><label>Contraseña</label><input type="password" id="syPw" autocomplete="current-password"></div>
-    <div class="row" style="margin-top:8px"><button class="btn pri" data-act="syncLogin">Entrar</button><button class="btn" data-act="syncSignup">Crear cuenta</button>${c.fixed?'':'<span class="sp"></span><button class="btn sm" data-act="syncReset">Cambiar proyecto</button>'}</div>${SB.err?`<p class="small down">${esc(SB.err)}</p>`:''}`;
-  return head+`<p class="small">Conectado como <b>${esc(SB.session.user.email)}</b>${SB.last?' · última sincronización '+SB.last.toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'}):''}${S&&S.meta.dirty?' · <b>cambios pendientes</b>':''}</p>
-   ${SB.err?`<p class="small down">${esc(SB.err)}</p>`:''}<div class="row"><button class="btn pri" data-act="syncNow">Sincronizar ahora</button><button class="btn" data-act="syncLogout">Cerrar sesión</button></div>
-   <p class="small muted">Se sincroniza solo al guardar, al volver a la pestaña y al recuperar la conexión. Si editas en dos dispositivos a la vez sin conexión, se combinan los movimientos de ambos.</p>`;
+  const head=`<h3>☁ Sincronizar con mi Google Sheets (opcional)</h3><div class="sub">Guarda tus datos en una hoja privada de tu Google Drive para usarlos desde el móvil y cualquier ordenador. Sin esto, los datos solo están en este navegador.</div>`;
+  if(!SB.on)return head+`<div class="form"><label>URL del script</label><input type="text" id="syUrl" value="${esc(c&&c.url||SHEETS_URL)}" placeholder="https://script.google.com/macros/s/…/exec" ${SHEETS_URL?'readonly':''}>
+    <label>Clave secreta</label><input type="password" id="syKey" placeholder="La que te dio el script" autocomplete="off"></div>
+    <div class="row" style="margin-top:8px"><button class="btn pri" id="syGo" data-act="syncConnect">Conectar</button><span class="small muted">Pasos en el README del repositorio.</span></div>`;
+  return head+`<p class="small">Conectado a tu hoja ✓${SB.last?' · última sincronización '+SB.last.toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'}):''}${S&&S.meta.dirty?' · <b>cambios pendientes</b>':''}</p>
+   ${SB.err?`<p class="small down">${esc(SB.err)}</p>`:''}<div class="row"><button class="btn pri" data-act="syncNow">Sincronizar ahora</button><button class="btn" data-act="syncLogout">Desconectar este dispositivo</button></div>
+   <p class="small muted">Se sincroniza solo al guardar, al volver a la pestaña y al recuperar la conexión. Si editas la hoja a mano, la app recoge los cambios al abrirse. La clave se guarda solo en este navegador.</p>`;
 }
 window.addEventListener('focus',()=>syncNow());window.addEventListener('online',()=>syncNow());window.addEventListener('offline',syncBadge);
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')syncNow()});
 
 function defaultRules(){
   const R=[];const add=(cat,kws,sign='')=>kws.forEach(kw=>R.push({kw,cat,sign}));
