@@ -106,7 +106,7 @@ details summary{cursor:pointer;color:var(--text-2)}
     <label class="row small">Mes <select id="monthSel"></select></label>
     <span id="syncBadge" class="pill" style="display:none;cursor:pointer" data-tab-go="ajustes"></span>
     <button class="btn sm" id="btnTheme" title="Cambiar tema">◐</button>
-    <button class="btn sm" id="btnExport" title="Descargar copia de seguridad (JSON)">⬇ Copia</button>
+    <button class="btn sm" id="btnExport" title="Descargar una copia de seguridad (JSON) de tus datos">⬇ Descargar copia</button>
   </div>
   <nav id="tabs"></nav>
 </header>
@@ -471,7 +471,7 @@ function vResumen(){
         return `<div style="margin:8px 0"><div class="row small"><b>${esc(c.name)}</b><span class="sp"></span>${fmtE(sp)} / ${fmtE(c.budget)} <span class="status">${st[1]}</span></div><div class="tr" style="height:8px;background:var(--surface-2);border-radius:4px;margin-top:3px"><div style="height:8px;border-radius:4px;width:${Math.min(100,p*100)}%;background:${st[0]}"></div></div></div>`}).join('')}</div>
   </div>`;
 }
-function emptyData(){return `<div class="card empty"><p>Aún no hay movimientos.</p><button class="btn pri" data-tab-go="importar">Importar extractos</button> <button class="btn" data-act="newTx">Añadir un movimiento</button></div>`}
+function emptyData(){return `<div class="card empty"><p>Aún no hay movimientos.</p><button class="btn pri" data-act="importBackup">📂 Cargar mi copia de seguridad (mis-finanzas.json)</button> <button class="btn" data-tab-go="importar">Importar extractos</button> <button class="btn" data-act="newTx">Añadir un movimiento</button></div>`}
 
 /* ---------------- vista: Movimientos ---------------- */
 function filteredTxs(){
